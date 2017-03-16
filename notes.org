@@ -1,0 +1,58 @@
+#+TITLE:  parse-js.el Notes
+#+AUTHOR: John Hooks
+#+EMAIL:  john@bitmachina.com
+#+DATE:   <2016-11-28 Mon>
+#+STARTUP: indent
+#+STARTUP: hidestars
+
+** Goals
+Create a simplified parser that allows more complex highlighting and 
+indentation that standard ~js-mode~.
+
+There should be only afew parser errors. This tool is not to detect
+errors, flycheck is an awesome tool that allows infinite customization
+though third party linters.
+
+The parser should assume correct code and only provide its utilities
+once the errors in the buffer have been corrected.
+
+Stings, template stings, regular expressions and numbers do not need
+to be parsed for value, only boundaries, as required for the first
+goal.
+** Saving time
+Parse to the current line, save the parser state at the beginning of
+the line, reparse just the current line during input.
+
+Unless providing indention for a selection of code or the initial
+highlighing, only parsing the current line should be sufficent. The
+~parse-js--prev-type~ variable will provide some of the necessary
+information for indenting the current line.
+
+Perhaps most necessary actions can be accomplished without saving a
+list of nodes or tokens. Use hooks to supply necessay information
+during parsing.
+
+Fontifications should be queued and done as a batch.
+** Moving through the input
+Using ~point~ to track position while parsing. This makes using the
+regular expression functions much easier, and a single
+~save-excursion~ before initializing the parse function will keep
+point intact for regular editting.
+
+** Numbers
+Octal, Decimal, Hexadecimal and Float numbers should be lexed for
+position and relative validity. Though values are not to be parsed for
+value. Numbers that do require value are Unicode code points or escape
+sequences in ~parse-js--read-code-point~ and
+~parse-js--read-excape-char~.
+
+Float numbers are read in ~parse-js--read-number~, though the integer
+parsing function is used to read the numerical portions of the number.
+
+** Errors
+Need to create a family of elisp error symbols that can be used to throw
+specific errors, rather than just including a string in the signal error
+function. It should allow for gracefully handling specific errors while
+parsing.
+
+
