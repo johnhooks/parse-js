@@ -279,6 +279,10 @@ Also stores a reference to the token type in `parse-js-keywords'."
 (defvar parse-js-VOID (parse-js--make-keyword "void" 'prefix 'before-expr 'starts-expr))
 (defvar parse-js-DELETE (parse-js--make-keyword "delete" 'prefix 'before-expr 'starts-expr))
 
+;;; Miscellaneous Token Types
+
+(defvar parse-js-COMMENT (parse-js--make-tt "comment"))
+
 ;;; Context Types
 
 (defvar parse-js-B-STAT '((token "{")))
@@ -434,14 +438,6 @@ Reverses the list before converting."
 
 ;;; Helper Predicate Functions
 
-;; To Remove
-(defun parse-js--linebreak-p ()
-  "Return non-nil if there is a linebreak between current and last tokens."
-  (save-excursion
-    (goto-char parse-js--start)
-    (search-backward "\n" parse-js--prev-end t) ; returns point of new location
-    (not (= parse-js--start (point)))))         ; return t or nil
-
 ;; Taken from `js2-mode-identifier-start-p'
 (defun parse-js-identifier-start-p (char)
   "Is CHAR a valid start to an ES5 Identifier?
@@ -495,42 +491,16 @@ Otherwise signal `parse-js-unexpected-character-error'."
     (signal 'parse-js-unexpected-character-error
             `((start ,(point) (end ,(1+ (point))))))))
 
-(defun parse-js--skip-line-comment ()
-  "Skip forward over a line comment."
-  ;; Return t for use in `parse-js--skip-whitespace-and-comments'.
-  (search-forward "\n")
-  (setq parse-js--newline-before t))
-
-(defun parse-js--skip-multiline-comment ()
-  "Skip forward over a multiline comment."
-  ;; Return t for use in `parse-js--skip-whitespace-and-comments'.
-  (re-search-forward "*/\\|\n")
-  (when (eq ?\C-j (char-before))
-    (setq parse-js--newline-before t)
-    (unless (search-forward "*/" nil t)
-      (signal 'parse-js-token-error '("Unterminated multiline comment"))))
-  t)
-
-(defun parse-js--skip-whitespace (&optional newline)
+(defun parse-js--skip-whitespace ()
   "Skip forward over whitespace and newlines."
   ;; Return t if moved over whitespace or newline.
   (let ((start (point)))
-    (skip-syntax-forward " ")
-    (when (eq ?\C-j (char-after))
-      (forward-char)
-      (setq parse-js--newline-before t)
-      (parse-js--skip-whitespace t))
-    (or (< start (point))
-        newline)))
-
-(defun parse-js--skip-whitespace-and-comments ()
-  "Skip forward over whitespace and comments."
-  (while (or (parse-js--skip-whitespace)
-             (and (eq ?/ (char-after))
-                  (or (and (eq ?/ (char-after (1+ (point))))
-                           (parse-js--skip-line-comment))
-                      (and (eq ?* (char-after (1+ (point))))
-                           (parse-js--skip-multiline-comment)))))))
+    (while (or (< 0 (skip-syntax-forward " "))
+               (when (eq ?\C-j (char-after))
+                 (forward-char)
+                 (or parse-js--newline-before     ; Just return it if already t
+                     (setq parse-js--newline-before t)))))
+    (< start (point))))
 
 ;;; Context Functions
 
@@ -566,12 +536,14 @@ Otherwise signal `parse-js-unexpected-character-error'."
               (eq parse-js-DOT prev-tt))
          ;; Don't know what situation this is trying to catch.
          (setq parse-js--expr-allowed nil))
+        ;; '{'  Enter brace statement, expression context.
         ((eq parse-js-BRACE-L parse-js--type)
          (push (if (parse-js--brace-is-block-p prev-tt)
                    parse-js-B-STAT
                  parse-js-B-EXPR)
                parse-js--ctx-stack)
          (setq parse-js--expr-allowed t))
+        ;; '}' or ')'  Exit either brace or paren context.
         ((or (eq parse-js-BRACE-R parse-js--type)
              (eq parse-js-PAREN-R parse-js--type))
          (if (= 1 (length parse-js--ctx-stack))
@@ -586,6 +558,7 @@ Otherwise signal `parse-js-unexpected-character-error'."
                    (t
                     (setq parse-js--expr-allowed
                           (not (assq 'is-expr out))))))))
+        ;; ?(  Enter parenthesis context.
         ((eq parse-js-PAREN-L parse-js--type)
          (push (if (or (eq parse-js-IF prev-tt)
                        (eq parse-js-FOR prev-tt)
@@ -595,15 +568,19 @@ Otherwise signal `parse-js-unexpected-character-error'."
                  parse-js-P-EXPR)
                parse-js--ctx-stack)
          (setq parse-js--expr-allowed t))
+        ;; '${' Enter brace template context.
         ((eq parse-js-DOLLAR-BRACE-L parse-js--type)
          (push parse-js-B-TMPL parse-js--ctx-stack)
          (setq parse-js--expr-allowed t))
+        ;; '`'  Enter or exit a template literal context.
         ((eq parse-js-BACKQUOTE parse-js--type)
          (if (eq parse-js-Q-TMPL (parse-js--current-ctx))
              (pop parse-js--ctx-stack)
            (push parse-js-Q-TMPL parse-js--ctx-stack))
          (setq parse-js--expr-allowed nil))
-        ((eq parse-js-INC-DEC parse-js--type))  ; `parse-js--expr-allowed' stays the same
+        ;; '--' or '++'  Do not alter `parse-js--expr-allowed'.
+        ((or (eq parse-js-INC-DEC parse-js--type) (eq parse-js-COMMENT parse-js--type)))
+        ;; 'function'  Enter function expression context.
         ((eq parse-js-FUNCTION parse-js--type)
          (if (and (assq 'before-expr prev-tt)
                   (not (or (eq parse-js-SEMI prev-tt)
@@ -613,9 +590,9 @@ Otherwise signal `parse-js-unexpected-character-error'."
                   (eq parse-js-B-STAT (parse-js--current-ctx)))
              (push parse-js-F-EXPR parse-js--ctx-stack))
          (setq parse-js--expr-allowed nil))
+        ;; If the token type does not have before-expr in its alist
+        ;; `parse-js--expr-allowed' will be set to nil.
         (t
-         ;; If the token type does not have before-expr in its alist
-         ;; `parse-js--expr-allowed' will be set to nil.
          (setq parse-js--expr-allowed (or parse-js--newline-before
                                   (cadr (assq 'before-expr parse-js--type)))))))
 
@@ -656,13 +633,28 @@ Otherwise signal `parse-js-unexpected-character-error'."
 
 (defun parse-js--read-token-slash ()
   "Read a token starting with a ?\/."
-  (cond
-   (parse-js--expr-allowed      ; Must be a regular expression.
-    (parse-js--read-regexp))
-   ((eq ?= (parse-js--peek))
-    (parse-js--finish-op parse-js-ASSIGN 2))
-   (t
-    (parse-js--finish-op parse-js-SLASH 1))))
+  (let ((next (parse-js--peek)))
+    (cond
+     ((eq ?/ next)
+      (if (setq parse-js--newline-before (search-forward "\n" nil t))
+          (parse-js--finish-token parse-js-COMMENT)
+        ;; Hit eof, finish commment at the end of the buffer.
+        (goto-char (point-max))
+        (parse-js--finish-token parse-js-COMMENT)))
+     ((eq ?* next)
+      ;; Don't look for a newline if already found.
+      (or (and (re-search-forward "*/\\|\n" nil t)
+               (if (eq ?\C-j (char-before))
+                   (setq parse-js--newline-before (search-forward "*/" nil t))
+                 (setq parse-js--newline-before (point))))
+          (signal 'parse-js-token-error '("Unterminated multiline comment")))
+      (parse-js--finish-token parse-js-COMMENT))
+     (parse-js--expr-allowed      ; Must be a regular expression.
+      (parse-js--read-regexp))
+     ((eq ?= next)
+      (parse-js--finish-op parse-js-ASSIGN 2))
+     (t
+      (parse-js--finish-op parse-js-SLASH 1)))))
 
 (defun parse-js--read-token-mult-modulo-exp (first)
   "Read a token starting with a ?* or ?%, FIRST indicates which."
@@ -1043,7 +1035,9 @@ delimiter."
   (let ((ctx (parse-js--current-ctx)))
     (when (or (not ctx)
               (not (assq 'preserve-space ctx)))
-      (parse-js--skip-whitespace-and-comments))
+      ;; (parse-js--skip-whitespace-and-comments)
+      (parse-js--skip-whitespace)
+      )
     (setq parse-js--start (point))
     ;; HACK: Perhaps add comment and whitespace skipping functions.
     ;; (if (save-excursion (search-backward "\n" parse-js--prev-end t))

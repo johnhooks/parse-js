@@ -460,3 +460,20 @@
         TYPEOF
         VOID
         DELETE))
+
+;; Comments
+
+(parse-js-deftest-lexer single-line-comment
+  "foo // bar\n" parse-js-COMMENT :length 7 :start 5 :depth 2)
+
+(parse-js-deftest-lexer single-line-comment-eof
+  "foo // bar" parse-js-COMMENT :length 6 :start 5 :depth 2)
+
+(parse-js-deftest-lexer multi-line-comment
+  "foo /*\n  bar  \n*/\n" parse-js-COMMENT :length 13 :start 5 :depth 2)
+
+(parse-js-deftest-lexer multi-line-comment-eof
+  "foo /*\n  bar  \n*/" parse-js-COMMENT :length 13 :start 5 :depth 2)
+
+(parse-js-deftest-lexer multi-line-on-single-line-comment
+  "foo /*  bar  */\n" parse-js-COMMENT :length 11 :start 5 :depth 2)

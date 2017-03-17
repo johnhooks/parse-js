@@ -45,14 +45,14 @@
   (insert "return {}")
   (goto-char 1)
   (parse-js-get-token)                        ; move over return
-  (parse-js--skip-whitespace-and-comments)
+  (parse-js--skip-whitespace)
   (should (eq nil (parse-js--brace-is-block-p parse-js-RETURN))))
 
 (parse-js-deftest brace-is-block-return-newline
   (insert "return \n {}")
   (goto-char 1)
   (parse-js-get-token)                        ; move over return
-  (parse-js--skip-whitespace-and-comments)
+  (parse-js--skip-whitespace)
   (should (eq t (parse-js--brace-is-block-p parse-js-RETURN))))
 
 (parse-js-deftest brace-is-block-else
@@ -274,6 +274,21 @@
 
 (parse-js-deftest update-inc-dec-previous-t
   (let ((parse-js--type parse-js-INC-DEC)
+        (parse-js--expr-allowed t))
+    (parse-js--update-ctx nil)
+    (should (eq t parse-js--expr-allowed))))
+
+;;; Update Context parse-js-COMMENT
+;; Note: `parse-js--expr-allowed' should be left alone
+
+(parse-js-deftest update-comment-previous-nil
+  (let ((parse-js--type parse-js-COMMENT)
+        (parse-js--expr-allowed nil))
+    (parse-js--update-ctx nil)
+    (should (eq nil parse-js--expr-allowed))))
+
+(parse-js-deftest update-comment-previous-t
+  (let ((parse-js--type parse-js-COMMENT)
         (parse-js--expr-allowed t))
     (parse-js--update-ctx nil)
     (should (eq t parse-js--expr-allowed))))
