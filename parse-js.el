@@ -312,7 +312,7 @@ Also stores a reference to the token type in `parse-js-keywords'."
 (defvar-local parse-js--type parse-js-EOF
   "Lexer state token type.")
 
-(defvar-local parse-js--value nil               ; Still useful for indentifiers.
+(defvar-local parse-js--value nil
   "Lexer state token value, additional information beyond type.")
 
 (defvar-local parse-js--start 1
@@ -326,8 +326,6 @@ Also stores a reference to the token type in `parse-js-keywords'."
 
 ;; Properties of previous token:
 
-;; The lexer does not need this, though it should be handy
-;; when saving state for continued execution later.
 (defvar-local parse-js--prev-type parse-js-EOF
   "Lexer state last token type.")
 
@@ -374,9 +372,6 @@ Also stores a reference to the token type in `parse-js-keywords'."
 
 (defvar-local parse-js--await-pos 0
   "Parser state await position.")
-
-(defvar-local parse-js--labels '()              ; To Remove
-  "Parser state labels within current scope.")
 
 (defvar-local parse-js--string-buffer nil
   "List of chars built up while scanning various tokens.")
@@ -493,7 +488,7 @@ Otherwise signal `parse-js-unexpected-character-error'."
 
 (defun parse-js--skip-whitespace ()
   "Skip forward over whitespace and newlines."
-  ;; Return t if moved over whitespace or newline.
+  ;; Return t if moved over whitespace and/or newline.
   (let ((start (point)))
     (while (or (< 0 (skip-syntax-forward " "))
                (when (eq ?\C-j (char-after))
@@ -642,7 +637,7 @@ Otherwise signal `parse-js-unexpected-character-error'."
         (goto-char (point-max))
         (parse-js--finish-token parse-js-COMMENT)))
      ((eq ?* next)
-      ;; Don't look for a newline if already found.
+      ;; Don't look for a newline if one has already been found.
       (or (and (re-search-forward "*/\\|\n" nil t)
                (if (eq ?\C-j (char-before))
                    (setq parse-js--newline-before (search-forward "*/" nil t))
@@ -745,11 +740,6 @@ Read UPTO a specific number of characters."
   (if (eq ?{ (char-after))
       ;; Unicode Code Point Escape \u{...}
       (progn
-        ;; I don't think I need to worry about versions.
-        ;; Just support the latest features and the linter
-        ;; can pickup on those sorts of issues.
-        ;; (when (< parse-js-ecma-version 6)
-        ;;   (parse-js--unexpected))
         (forward-char)                  ; Move over '{'
         (let ((code nil)
               (start (point)))
@@ -757,7 +747,7 @@ Read UPTO a specific number of characters."
             (setq code (parse-js--buffer-to-number start (point) 16)))
           (cond ((not code)
                  (parse-js--raise 'parse-js-code-point-error start (point)))
-                ((> code #x10ffff) ; Think this error should just  ahead
+                ((> code #x10ffff) ; Think this error should be removed
                  (parse-js--raise 'parse-js-code-point-bound-error start (point)))
                 (t
                  (parse-js--expect-char ?})
@@ -779,7 +769,7 @@ The IN-TEMPLATE option invalidates the use of octal literals in the string."
           ((eq ?x char)
            (forward-char)
            (let ((start (point)))
-             (or (parse-js--eat "[0-9A-Fa-f]\\{2\\}") ; Require exactly two hex chars.
+             (or (parse-js--eat "[0-9A-Fa-f]\\{2\\}")
                  (parse-js--raise 'parse-js-string-hex-escape-error (- start 2) (point)))))
           ((<= ?0 char ?7)
            (let ((start (point))
@@ -788,12 +778,13 @@ The IN-TEMPLATE option invalidates the use of octal literals in the string."
                        (> num 255))
                (goto-char start)
                (setq num (parse-js--read-octal 2))
-               (when (not num) ; HACK: JQuery has a octal literal of \0 in a string.
+               (when (not num) ; HACK: Find better solution than 3 attempts.
                  (goto-char start)
                  (setq num (parse-js--read-octal 1))))
              (when (and (or parse-js--strict in-template)
                         (or (< 1 (- (point) start))
                             (not (= 0 num))))
+               ;; TODO: Only warn about illegal octals.
                (if in-template
                    (parse-js--raise 'parse-js-template-octal-error (1- start) (point))
                  (parse-js--raise 'parse-js-string-octal-strict-error (1- start) (point))))))
@@ -803,7 +794,8 @@ The IN-TEMPLATE option invalidates the use of octal literals in the string."
 (defun parse-js--read-number (&optional starts-with-dot)
   "Read JavaScript number from the buffer.
 STARTS-WITH-DOT indicates the previous character was a period."
-  ;; Stratagy found . or 0-9 expectations are integer, float, or possible octal.
+  ;; Inputs: '.' or /[0-9]*/
+  ;; Attempt to parse as either integer, float, or possible octal.
   (let ((start (point))
         (octal (eq ?0 (char-after)))) ; Would we ever get a zero
     (when (and (not starts-with-dot)  ; to this function?
@@ -825,7 +817,7 @@ STARTS-WITH-DOT indicates the previous character was a period."
         (forward-char))
       (when (null (parse-js--eat parse-js--decimal-re))
         (parse-js--raise 'parse-js-number-invalid-error parse-js--start (point))))
-    (when (and (char-after)             ; Protect regex search from nil
+    (when (and (char-after)           ; Protect regex search from nil.
                (parse-js-identifier-start-p (char-after)))
       (parse-js--raise 'parse-js-unexpected-identifier-error parse-js--start (point)))
     (parse-js--finish-token parse-js-NUM)))
@@ -843,7 +835,7 @@ STARTS-WITH-DOT indicates the previous character was a period."
             (parse-js--eat parse-js--octal-re))
            ((memq next '(?b ?B))
             (parse-js--eat parse-js--binary-re)))
-          (if (and (char-after)      ; Protect regex search from nil
+          (if (and (char-after)       ; Protect regex search from nil.
                    (parse-js-identifier-start-p (char-after)))
               (parse-js--raise 'parse-js-unexpected-identifier-error parse-js--start (point))
             (parse-js--finish-token parse-js-NUM)))
@@ -851,65 +843,58 @@ STARTS-WITH-DOT indicates the previous character was a period."
 
 (defun parse-js--read-regexp ()
   "Read regular expression.
-Criteria include ending delimiter and valid flags."
+Criteria include ending delimiter and flags."
   (forward-char)                        ; Move over opening delimiter.
   (let (char
-        flags
-        contents
-        escaped
         in-class
-        (start (point)))                ; Used for content and then flags.
-    (catch 'loop
-      (while t
-        (setq char (char-after))
-        (if (or (= (point) (point-max))
-                (eq ?\C-j char))
-            (parse-js--raise 'parse-js-regexp-delimiter-error parse-js--start (point)))
-        (if (not escaped)
-            (cond ((eq ?\[ char)
-                   (setq in-class t))
-                  ((and in-class
-                        (eq ?\] char))
-                   (setq in-class nil))
-                  ((and (not in-class)
-                        (eq ?\/ char))
-                   (throw 'loop t))
-                  (t
-                   (setq escaped (eq ?\\ char))))
-          (setq escaped nil))
-        (forward-char)))
-    ;; `buffer-substring' inserts neccessary double escape of backslashs.
-    (setq contents (buffer-substring-no-properties start (point)))
-    (forward-char)                      ; Move over ending delimiter.
-    (setq start (point))                ; Reset to beginning of flags.
-    (skip-syntax-forward "w_")
-    (setq flags (buffer-substring-no-properties start (point)))
-    (unless (equal flags "")
-      (let ((case-fold-search nil))
-        (unless (string-match "^[gimyu]*$" flags)
-          (parse-js--raise 'parse-js-regexp-flags-error start (point)))))
-    (parse-js--finish-token parse-js-REGEXP (list contents flags))))
+        (looking t))
+    (while looking
+      ;; Advance to next critical character.
+      (re-search-forward "[^\][/\\\\\C-j]*" nil t) ; ][/\ or \n
+      (setq char (char-after))
+      (cond
+       ;; Found escape.
+       ((eq ?\\ char)
+        (parse-js--read-escape-char nil))
+       ;; Found closing delimiter, exit the loop if not in a class.
+       ((eq ?\/ char)
+        (forward-char)
+        (unless in-class (setq looking nil)))
+       ((and (not in-class) (eq ?\[ char))
+        (forward-char)
+        (setq in-class t))              ; Enter character class
+       ((and in-class (eq ?\] char))
+        (forward-char)
+        (setq in-class nil))            ; Exit character class
+       ;; Hit eol or eof, signal error.
+       (t
+        (parse-js--raise 'parse-js-regexp-delimiter-error parse-js--start (point))))))
+  (skip-syntax-forward "w")       ; Advance over flags, valid or not
+  (parse-js--finish-token parse-js-REGEXP))
 
 (defun parse-js--read-string (punc)
   "Search for ending delimiter matching PUNC.
 Signal error if the eol or eof is reached before the matching
 delimiter."
-  ;; Check for a valid string, no copy is created as in Acorn.
   (forward-char)                        ; Move over opening delimiter.
-  (let ((char (char-after)))
-    (catch 'string
-      (while t
-        (cond ((or (= (point) (point-max))
-                   (= 10 char))
-               (parse-js--raise 'parse-js-string-delimiter-error parse-js--start (point)))
-              ((eq ?\\ char)
-               (parse-js--read-escape-char nil))
-              ((eq punc char)
-               (forward-char)           ; Move over ending delimiter.
-               (throw 'string nil))
-              (t
-               (forward-char)))
-        (setq char (char-after)))))
+  (let (char
+        (regexp (concat "[^" (string punc) "\\\\\C-j]*"))
+        (looking t))
+    (while looking
+      ;; Advance to next critical character.
+      (re-search-forward regexp nil t)
+      (setq char (char-after))
+      (cond
+       ;; Found escape.
+       ((eq ?\\ char)
+        (parse-js--read-escape-char nil))
+       ;; Found closing delimiter, exit the loop.
+       ((eq punc char)
+        (forward-char)
+        (setq looking nil))
+       ;; Hit eol or eof, signal error.
+       (t
+        (parse-js--raise 'parse-js-string-delimiter-error parse-js--start (point))))))
   (parse-js--finish-token parse-js-STRING))
 
 (defun parse-js--string-builder (list)
@@ -943,6 +928,7 @@ delimiter."
                                          (parse-js--string-builder (nreverse out))))))
          ((eq ?\\ char)
           (push (buffer-substring-no-properties chunk-start (point)) out)
+          ;; (forward-char)                ; HACK
           (push (string (parse-js--read-escape-char t)) out)
           (setq chunk-start (point)))
          ((eq ?\C-j char)

@@ -282,7 +282,7 @@
 
 (parse-js-deftest-lexer no-keyword-escapes-ecma-5-and-below
   "\\u0073witch" parse-js-NAME :length 11 :value "switch"
-  :bind ((parse-js-ecma-version 5)) )
+  :bind ((parse-js-ecma-version 5)))
 
 ;;; Name & Identifier Errors
 
@@ -358,11 +358,23 @@
 (parse-js-deftest-lexer string-single-quotes
   "'hello foo'" parse-js-STRING :length 11)
 
+(parse-js-deftest-lexer string-single-quotes-escape-single-quote
+  "'hello \\\'foo\\\''" parse-js-STRING :length 15)
+
 (parse-js-deftest-lexer string-double-quotes
   "\"hello foo\"" parse-js-STRING :length 11)
 
-(parse-js-deftest-lexer string-valid-hex-escape
+(parse-js-deftest-lexer string-double-quotes-escape-double-quote
+  "\"hello \\\"foo\\\"\"" parse-js-STRING :length 15)
+
+(parse-js-deftest-lexer string-hex-escape
   "\"fo\\x6f bar\"" parse-js-STRING :length 12)
+
+(parse-js-deftest-lexer string-escape-sequence
+  "'foo \\u0620ar'" parse-js-STRING :length 14)
+
+(parse-js-deftest-lexer string-code-point
+  "'foo \\u{62}ar'" parse-js-STRING :length 14)
 
 (parse-js-deftest-lexer string-allow-octal-in-non-strict
   "\"foo \\42ar\"" parse-js-STRING :length 11
@@ -385,6 +397,9 @@
 (parse-js-deftest-lexer template-basic
   "`foo bar`" parse-js-TEMPLATE :length 7 :start 2 :depth 2)
 
+(parse-js-deftest-lexer template-hex-escape
+  "`fo\\x6f bar`" parse-js-TEMPLATE :length 10 :start 2 :depth 2)
+
 (parse-js-deftest-lexer template-escape-sequence
   "`foo \\u0062ar`" parse-js-TEMPLATE :length 12 :start 2 :depth 2)
 
@@ -403,18 +418,48 @@
 ;;; Regular Expressions
 
 (parse-js-deftest-lexer regexp-no-flags
-  "/f[oO]*ba[rR]/" parse-js-REGEXP :length 14)
+  "/foo ba[rR]/" parse-js-REGEXP :length 12)
 
-(parse-js-deftest-lexer regexp-valid-flags
-  "/f[oO]*ba[rR]/gimyu" parse-js-REGEXP :length 19)
+(parse-js-deftest-lexer regexp-with-flags
+  "/foo ba[rR]/gi" parse-js-REGEXP :length 14)
+
+(parse-js-deftest-lexer regexp-escape-closing-delimiter
+  "/foo\\/bar/" parse-js-REGEXP :length 10)
+
+(parse-js-deftest-lexer regexp-forward-slash-in-class
+  "/foo[/]bar/" parse-js-REGEXP :length 11)
+
+(parse-js-deftest-lexer regexp-escape-closing-class-delimiter
+  "/foo[\\]]bar/" parse-js-REGEXP :length 12)
+
+(parse-js-deftest-lexer regexp-with-octal-escape
+  "/f[oO]*\\142a[rR]/" parse-js-REGEXP :length 17 :bind ((parse-js--strict nil)))
+
+(parse-js-deftest-lexer regexp-with-octal-escape-in-class
+  "/f[oO]*ba[\\162R]/" parse-js-REGEXP :length 17 :bind ((parse-js--strict nil)))
+
+(parse-js-deftest-lexer regexp-with-hex-escape
+  "/f[oO]*\\x62a[rR]/" parse-js-REGEXP :length 17)
+
+(parse-js-deftest-lexer regexp-with-hex-escape-in-class
+  "/f[oO]*ba[\\x72R]/" parse-js-REGEXP :length 17)
+
+(parse-js-deftest-lexer regexp-with-escape-sequence
+  "/f[oO]*\\u0062a[rR]/" parse-js-REGEXP :length 19)
+
+(parse-js-deftest-lexer regexp-with-escape-sequence-in-class
+  "/f[oO]*ba[\\u0072R]/" parse-js-REGEXP :length 19)
+
+(parse-js-deftest-lexer regexp-with-code-point
+  "/f[oO]*\\u{62}a[rR]/" parse-js-REGEXP :length 19)
+
+(parse-js-deftest-lexer regexp-with-code-point-in-class
+  "/f[oO]*ba[\\u{72}R]/" parse-js-REGEXP :length 19)
 
 ;;; Regular Expression Errors
 
 (parse-js-deftest-lexer-err regexp-missing-delimiter
   "/ba[rz]" 'parse-js-regexp-delimiter-error)
-
-(parse-js-deftest-lexer-err regexp-invalid-flags
-  "/foo/bar" 'parse-js-regexp-flags-error)
 
 ;;; Keywords
 
