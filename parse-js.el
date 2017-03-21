@@ -903,42 +903,35 @@ delimiter."
 
 (defun parse-js--read-tmpl-token ()
   "Read template string tokens."
-  ;; Don't think the values of the templates need to be built.
-  ;; But don't remove it without some thought.
-  (let ((out '())
-        (char (char-after))
-        (chunk-start (point)))
-    (catch 'tmpl
+  (let (char)
+    (catch 'token
       (while t
+        (re-search-forward "[^`$\\\\]*" nil t)
+        (setq char (char-after))
         (cond
-         ((= (point) (point-max))
-          (parse-js--raise 'parse-js-template-delimiter-errror parse-js--start (point)))
-         ((or (eq ?\` char)
-              (and (eq ?\$ char) (eq ?\{ (parse-js--peek))))
+         ((eq ?\` char)
           (if (and (= parse-js--start (point))
                    (eq parse-js-TEMPLATE parse-js--type))
-              (if (eq ?\$ char)
+              (progn
+                (forward-char)
+                (throw 'token (parse-js--finish-token parse-js-BACKQUOTE)))
+            (throw 'token (parse-js--finish-token parse-js-TEMPLATE))))
+         ((eq ?\$ char)
+          (if (eq ?\{ (parse-js--peek))
+              (if (and (= parse-js--start (point))
+                       (eq parse-js-TEMPLATE parse-js--type))
                   (progn
                     (forward-char 2)
-                    (throw 'tmpl (parse-js--finish-token parse-js-DOLLAR-BRACE-L)))
-                (forward-char)
-                (throw 'tmpl (parse-js--finish-token parse-js-BACKQUOTE)))
-            (push (buffer-substring-no-properties chunk-start (point)) out)
-            (throw 'tmpl (parse-js--finish-token parse-js-TEMPLATE
-                                         (parse-js--string-builder (nreverse out))))))
+                    (throw 'token (parse-js--finish-token parse-js-DOLLAR-BRACE-L)))
+                (throw 'token (parse-js--finish-token parse-js-TEMPLATE)))
+            ;; Its possible to catch a single '$' which is part of the
+            ;; literal template string. So it is necessary to always
+            ;; advance at least one character.
+            (forward-char)))
          ((eq ?\\ char)
-          (push (buffer-substring-no-properties chunk-start (point)) out)
-          ;; (forward-char)                ; HACK
-          (push (string (parse-js--read-escape-char t)) out)
-          (setq chunk-start (point)))
-         ((eq ?\C-j char)
-          (push (buffer-substring-no-properties chunk-start (point)) out)
-          (push (string char) out)
-          (forward-char)
-          (setq chunk-start (point))) ; Need to think about this one
-         (t
-          (forward-char)))
-        (setq char (char-after))))))
+          (parse-js--read-escape-char t))
+         (t                             ; Hit eof.
+          (parse-js--raise 'parse-js-template-delimiter-errror parse-js--start (point))))))))
 
 (defun parse-js--read-word-internal ()
   "Read ECMAScript Identifier."
@@ -1022,8 +1015,7 @@ delimiter."
     (when (or (not ctx)
               (not (assq 'preserve-space ctx)))
       ;; (parse-js--skip-whitespace-and-comments)
-      (parse-js--skip-whitespace)
-      )
+      (parse-js--skip-whitespace))
     (setq parse-js--start (point))
     ;; HACK: Perhaps add comment and whitespace skipping functions.
     ;; (if (save-excursion (search-backward "\n" parse-js--prev-end t))
