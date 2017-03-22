@@ -588,8 +588,7 @@ Otherwise signal `parse-js-unexpected-character-error'."
         ;; If the token type does not have before-expr in its alist
         ;; `parse-js--expr-allowed' will be set to nil.
         (t
-         (setq parse-js--expr-allowed (or parse-js--newline-before
-                                  (cadr (assq 'before-expr parse-js--type)))))))
+         (setq parse-js--expr-allowed (cadr (assq 'before-expr parse-js--type))))))
 
 ;;; Token Reading Functions
 
@@ -631,8 +630,10 @@ Otherwise signal `parse-js-unexpected-character-error'."
   (let ((next (parse-js--peek)))
     (cond
      ((eq ?/ next)
-      (if (setq parse-js--newline-before (search-forward "\n" nil t))
-          (parse-js--finish-token parse-js-COMMENT)
+      (if (search-forward "\n" nil t)
+          (progn
+            (setq parse-js--newline-before t)
+            (parse-js--finish-token parse-js-COMMENT))
         ;; Hit eof, finish commment at the end of the buffer.
         (goto-char (point-max))
         (parse-js--finish-token parse-js-COMMENT)))
@@ -640,8 +641,10 @@ Otherwise signal `parse-js-unexpected-character-error'."
       ;; Don't look for a newline if one has already been found.
       (or (and (re-search-forward "*/\\|\n" nil t)
                (if (eq ?\C-j (char-before))
-                   (setq parse-js--newline-before (search-forward "*/" nil t))
-                 (setq parse-js--newline-before (point))))
+                   (progn
+                     (setq parse-js--newline-before t)
+                     (search-forward "*/" nil t))
+                 t))                    ; Found '*/' without '\n'
           (signal 'parse-js-token-error '("Unterminated multiline comment")))
       (parse-js--finish-token parse-js-COMMENT))
      (parse-js--expr-allowed      ; Must be a regular expression.
@@ -1010,22 +1013,19 @@ delimiter."
   (setq parse-js--prev-end parse-js--end)
   (setq parse-js--prev-start parse-js--start)
   ;; Load current token into parser state.
-  ;; Implements logic of nextToken and readToken from Acorn
   (let ((ctx (parse-js--current-ctx)))
     (when (or (not ctx)
               (not (assq 'preserve-space ctx)))
-      ;; (parse-js--skip-whitespace-and-comments)
+      ;; Reset `parse-js--newline-before' unless last token was a comment.
+      ;; Allows comments to set `parse-js--newline-before' in addition to
+      ;; `parse-js--skip-whitespace'.
+      (unless (and parse-js--newline-before
+                   (eq parse-js-COMMENT parse-js--prev-type))
+        (setq parse-js--newline-before nil))
       (parse-js--skip-whitespace))
     (setq parse-js--start (point))
-    ;; HACK: Perhaps add comment and whitespace skipping functions.
-    ;; (if (save-excursion (search-backward "\n" parse-js--prev-end t))
-    ;;     (setq parse-js--newline-before t)
-    ;;   (setq parse-js--newline-before nil))
     (if (eq (point) (point-max))
         (parse-js--finish-token parse-js-EOF)
-      ;; At the moment the only override is for the Q-TEMP context,
-      ;; should I just call `parse-js--read-tmpl-token' from here?
-      ;; UPDATE: No, planning to add an override for regexps.
       (cond ((assq 'override ctx)
              (funcall (cadr (assq 'override ctx))))
             ((or (parse-js-identifier-start-p (char-after)) ; Identifiers

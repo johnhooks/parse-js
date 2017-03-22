@@ -137,6 +137,9 @@
 (parse-js-deftest-lexer op-slash
   "4/5" parse-js-SLASH :start 2 :length 1 :depth 2)
 
+(parse-js-deftest-lexer op-slash-after-single-line-comment
+  "// foo bar \n 4/4" parse-js-SLASH :start 15 :length 1 :depth 3)
+
 (parse-js-deftest-lexer op-assign-division
   "foo/=10" parse-js-ASSIGN :start 4 :length 2 :depth 2)
 
