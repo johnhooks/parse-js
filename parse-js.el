@@ -1024,7 +1024,7 @@ delimiter."
         (setq parse-js--newline-before nil))
       (parse-js--skip-whitespace))
     (setq parse-js--start (point))
-    (if (eq (point) (point-max))
+    (if (eobp)
         (parse-js--finish-token parse-js-EOF)
       (cond ((assq 'override ctx)
              (funcall (cadr (assq 'override ctx))))
