@@ -647,7 +647,8 @@ Otherwise signal `parse-js-unexpected-character-error'."
                  t))                    ; Found '*/' without '\n'
           (signal 'parse-js-token-error '("Unterminated multiline comment")))
       (parse-js--finish-token parse-js-COMMENT))
-     (parse-js--expr-allowed      ; Must be a regular expression.
+     ((or parse-js--expr-allowed                ; Must be a regular expression.
+          (parse-js--can-insert-semicolon-p))
       (parse-js--read-regexp))
      ((eq ?= next)
       (parse-js--finish-op parse-js-ASSIGN 2))
@@ -1009,11 +1010,12 @@ delimiter."
 (defun parse-js--next ()
   "Transition current state to last state and read next token."
   ;; Load previous token state before advancing.
-  (setq parse-js--prev-type parse-js--type)
-  (setq parse-js--prev-end parse-js--end)
-  (setq parse-js--prev-start parse-js--start)
+  (setq parse-js--prev-type parse-js--type
+        parse-js--prev-end parse-js--end
+        parse-js--prev-start parse-js--start)
   ;; Load current token into parser state.
-  (let ((ctx (parse-js--current-ctx)))
+  (let ((char nil)
+        (ctx (parse-js--current-ctx)))
     (when (or (not ctx)
               (not (assq 'preserve-space ctx)))
       ;; Reset `parse-js--newline-before' unless last token was a comment.
@@ -1023,16 +1025,18 @@ delimiter."
                    (eq parse-js-COMMENT parse-js--prev-type))
         (setq parse-js--newline-before nil))
       (parse-js--skip-whitespace))
-    (setq parse-js--start (point))
-    (if (eobp)
-        (parse-js--finish-token parse-js-EOF)
-      (cond ((assq 'override ctx)
-             (funcall (cadr (assq 'override ctx))))
-            ((or (parse-js-identifier-start-p (char-after)) ; Identifiers
-                 (eq ?\\ (char-after)))
-             (parse-js--read-word))
-            (t
-             (parse-js--read-token (char-after)))))))
+    (setq char (char-after)
+          parse-js--start (point))
+    (cond
+     ((eobp)
+      (parse-js--finish-token parse-js-EOF))
+     ((assq 'override ctx)
+      (funcall (cadr (assq 'override ctx))))
+     ((or (parse-js-identifier-start-p char) ; Identifiers
+          (eq ?\\ char))
+      (parse-js--read-word))
+     (t
+      (parse-js--read-token char)))))
 
 (defun parse-js--make-token ()
   "Create token alist from parser state."
@@ -1072,11 +1076,11 @@ Returns t if token of TYPE was consumed, otherwise nil."
       (progn (parse-js--next) t)
     (parse-js--unexpected-token)))
 
-(defun parse-js--insert-semi-p ()
+(defun parse-js--can-insert-semicolon-p ()
   "Test whether or not a semi-colon can be inserted."
   (or (eq parse-js-EOF parse-js--type)
       (eq parse-js-BRACE-R parse-js--type)
-      (parse-js--linebreak-p)))
+      parse-js--newline-before))
 
 ;;; Expression Parsing
 
