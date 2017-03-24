@@ -39,96 +39,18 @@
   :type 'boolean
   :group 'parse-js-mode)
 
-;;; Error Master
+;;; Errors
 
 (define-error 'parse-js-error "A parse-js error")
 
-;;; Errors Tokenizer
-
-(define-error 'parse-js-token-error
-  "A parse-js tokenizer error" 'parse-js-error)
-
 (define-error 'parse-js-unexpected-character-error
-  "Unexpected character" 'parse-js-token-error)
+  "Unexpected character" 'parse-js-error)
 
-(define-error 'parse-js-identifier-error
-  "Unable to parse identifier" 'parse-js-token-error)
-(define-error 'parse-js-identifier-start-error
-  "Invalid identifier starting character" 'parse-js-identifier-error)
-(define-error 'parse-js-identifier-part-error
-  "Invalid identifier character" 'parse-js-identifier-error)
-(define-error 'parse-js-unexpected-identifier-error
-  "Unexpected identifier" 'parse-js-identifier-error)
+(define-error 'parse-js-template-delimiter-error
+  "Missing template closing delimiter" 'parse-js-error)
 
-(define-error 'parse-js-number-error
-  "Error while reading number" 'parse-js-token-error)
-(define-error 'parse-js-number-invalid-error
-  "Invalid number" 'parse-js-number-error)
-
-(define-error 'parse-js-string-error
-  "Error while reading string" 'parse-js-token-error)
-(define-error 'parse-js-string-delimiter-error
-  "Missing string closing delimiter" 'parse-js-string-error)
-(define-error 'parse-js-string-hex-escape-error
-  "Invalid hexadecimal escape sequence" 'parse-js-string-error)
-(define-error 'parse-js-string-octal-strict-error
-  "Invalid octal literal in strict mode" 'parse-js-string-error)
-
-(define-error 'parse-js-template-error
-  "Error while reading template string" 'parse-js-token-error)
-(define-error 'parse-js-template-delimiter-errror
-  "Missing template closing delimiter" 'parse-js-template-error)
-(define-error 'parse-js-template-octal-error
-  "Invalid octal literal in template string" 'parse-js-template-error)
-
-(define-error 'parse-js-code-point-error
-  "Error while reading Unicode code point" 'parse-js-token-error)
-(define-error 'parse-js-code-point-escape-error
-  "Invalid code point escape" 'parse-js-code-point-error)
-(define-error 'parse-js-code-point-bound-error
-  "Code point out of bounds" 'parse-js-code-point-error)
-(define-error 'parse-js-code-point-delimiter-error
-  "Missing code point closing delimiter" 'parse-js-code-point-error)
-
-(define-error 'parse-js-escape-sequence-error   ; Should it be code-point-error?
-  "Invalid escape sequence" 'parse-js-code-point-error)
-
-(define-error 'parse-js-regexp-error
-  "Error while reading regular expression" 'parse-js-token-error)
-(define-error 'parse-js-regexp-delimiter-error
-  "Missing regex closing delimiter" 'parse-js-regexp-error)
-(define-error 'parse-js-regexp-flags-error
-  "Invalid regexp flags" 'parse-js-regexp-error)
-
-;;; Errors Parser
-
-(define-error 'parse-js-parse-error
-  "A parse-js parsing error" 'parse-js-error)
-
-;;; Reserved Words Global Map
-
-(defvar parse-js-reserve-words (make-hash-table :test 'equal)
-  "Hash table to map reserved words to different environments.")
-
-(puthash 3 '("abstract" "boolean" "byte" "char" "class" "double"
-             "enum" "export" "extends" "final" "float" "goto"
-             "implements" "import" "int" "interface" "long" "native"
-             "package" "private" "protected" "public" "short" "static"
-             "super" "synchronized" "throws" "transient" "volatile")
-         parse-js-reserve-words)
-
-(puthash 5 '("class" "enum" "extends" "super" "const" "export" "import")
-         parse-js-reserve-words)
-
-(puthash 6 '("enum")
-         parse-js-reserve-words)
-
-(puthash 'strict '("implements" "interface" "let" "package" "private"
-                   "protected" "public" "static" "yield")
-         parse-js-reserve-words)
-
-(puthash 'strict-bind '("eval" "arguments")
-         parse-js-reserve-words)
+(define-error 'parse-js-multi-line-comment-delimiter-error
+  "Missing multi line comment closing delimiter" 'parse-js-error)
 
 ;;; Token Types
 
@@ -654,10 +576,11 @@ Otherwise signal `parse-js-unexpected-character-error'."
                      (setq parse-js--newline-before t)
                      (search-forward "*/" nil t))
                  t))                    ; Found '*/' without '\n'
-          (signal 'parse-js-token-error '("Unterminated multiline comment")))
+          (parse-js--raise 'parse-js-multi-line-comment-delimiter-error parse-js--start (point)))
       (parse-js--finish-token parse-js-COMMENT))
      ((or parse-js--expr-allowed                ; Must be a regular expression.
-          (parse-js--can-insert-semicolon-p))
+          ;;(parse-js--can-insert-semicolon-p)
+          )
       (parse-js--read-regexp))
      ((eq ?= next)
       (parse-js--finish-op parse-js-ASSIGN 2))
@@ -764,11 +687,16 @@ STARTS-WITH-DOT indicates the previous character was a period."
       (when (memq (char-after) '(?+ ?-))
         (forward-char))
       (when (null (parse-js--eat parse-js--decimal-re))
-        (parse-js--raise 'parse-js-number-invalid-error parse-js--start (point))))
+        (parse-js--warn parse-js--start (point) "Invalid float exponent")))
+    (parse-js--finish-token parse-js-NUM)
     (when (and (char-after)           ; Protect regex search from nil.
-               (parse-js-identifier-start-p (char-after)))
-      (parse-js--raise 'parse-js-unexpected-identifier-error parse-js--start (point)))
-    (parse-js--finish-token parse-js-NUM)))
+               (parse-js-identifier-part-p (char-after)))
+      ;; If an identifier is found afer a number push a warning, though
+      ;; still parse it as an identifier. Maybe change in the future.
+      (let ((start (point)))
+        (save-excursion
+          (skip-syntax-forward "w_")
+          (parse-js--warn start (point) "Unexpected identifier directly after number"))))))
 
 (defun parse-js--read-zero ()
   "Read a token starting with a ?0."
@@ -783,10 +711,13 @@ STARTS-WITH-DOT indicates the previous character was a period."
             (parse-js--eat parse-js--octal-re))
            ((memq next '(?b ?B))
             (parse-js--eat parse-js--binary-re)))
-          (if (and (char-after)       ; Protect regex search from nil.
-                   (parse-js-identifier-start-p (char-after)))
-              (parse-js--raise 'parse-js-unexpected-identifier-error parse-js--start (point))
-            (parse-js--finish-token parse-js-NUM)))
+          (when (and (char-after)           ; Protect regex search from nil.
+                     (parse-js-identifier-part-p (char-after)))
+            (save-excursion
+              (let ((start (point)))
+                (skip-syntax-forward "w_")
+                (parse-js--warn start (point) "Unexpected identifier directly after number"))))
+          (parse-js--finish-token parse-js-NUM))
       (parse-js--read-number nil))))
 
 (defun parse-js--read-code-point ()
@@ -802,9 +733,9 @@ Return an integer representing the escape if valid, otherwise nil."
             (setq code (parse-js--buffer-to-number (1+ start) (point) 16)))
           (cond
            ((not code)
-            (parse-js--warn (1- start) (point) "Invalid Unicode code point"))
+            (parse-js--warn (- start 2) (point) "Invalid Unicode code point"))
            ((> code #x10ffff)
-            (parse-js--warn (1- start) (point) "Unicode code point out of bounds"))
+            (parse-js--warn (- start 2) (point) "Unicode code point out of bounds"))
            (t
             (parse-js--expect-char ?})
             code)))
@@ -831,7 +762,8 @@ The IN-TEMPLATE option invalidates the use of octal literals in the string."
              (parse-js--warn start (point) "Invalid hexadecimal escape")))
           ((<= ?0 char ?7)
            (parse-js--eat "[0-7]\\{1,3\\}")
-           (when in-template
+           (when (or parse-js--strict
+                     in-template)
              (parse-js--warn start (point) "Octal in template string")))
           (t                            ; Any other escape
            (forward-char)))))
@@ -863,7 +795,8 @@ Criteria include ending delimiter and flags."
         (setq in-class nil))            ; Exit character class
        ;; Hit eol or eof, signal error.
        (t
-        (parse-js--raise 'parse-js-regexp-delimiter-error parse-js--start (point))))))
+        (setq looking nil)
+        (parse-js--warn parse-js--start (point) "Missing regular expression closing delimiter")))))
   (skip-syntax-forward "w")       ; Advance over flags, valid or not
   (parse-js--finish-token parse-js-REGEXP))
 
@@ -889,7 +822,8 @@ delimiter."
         (setq looking nil))
        ;; Hit eol or eof, signal error.
        (t
-        (parse-js--raise 'parse-js-string-delimiter-error parse-js--start (point))))))
+        (setq looking nil)
+        (parse-js--warn parse-js--start (point) "Missing string closing delimiter")))))
   (parse-js--finish-token parse-js-STRING))
 
 (defun parse-js--string-builder (list)
@@ -939,13 +873,14 @@ delimiter."
           (parse-js--read-code-point))
       (parse-js--warn (- (point) 2) (point) "Invalid escape in identifier"))))
 
-;; If an escape is not an identifier part or an identifier start, warn!
+;; TODO: If an escape is not an identifier part, warn!
 (defun parse-js--read-word-internal ()
   "Read ECMAScript Identifier."
   (setq parse-js--contains-esc nil)
-  (let (chunk
+  (let (word
+        chunk
         invalid
-        (word '())
+        (looking t)
         (start (point)))
     ;; `parse-js-identifier-start-p' was already varified for a regular
     ;; character. Need to check for code point escapes.
@@ -955,23 +890,28 @@ delimiter."
                         (not chunk)
                         (not (parse-js-identifier-start-p chunk))))
       (if invalid
-          (parse-js--warn start (point) "Invalid identifier start")
+          (parse-js--warn start (point) "Invalid identifier start character")
         (push (string chunk) word))) ; Here chunk is a character
     (setq start (point))
-    (while (or (< 0 (skip-syntax-forward "w_"))
-               (eq ?\\ (char-after)))
-      (if (eq ?\\ (char-after))
-          (progn
-            (setq chunk (parse-js--read-word-escape))
-            (setq invalid (or invalid   ; Once it is set stop checking.
-                              (not chunk)
-                              (not (parse-js-identifier-part-p chunk))))
-            (unless invalid
-              (push (string chunk) word)))
+    (while looking
+      (cond
+       ((< 0 (skip-syntax-forward "w_"))
         (unless invalid
           (push (buffer-substring-no-properties start (point)) word)))
+       ((eq ?\\ (char-after))
+        (setq chunk (parse-js--read-word-escape))
+        (if (not chunk)
+            (setq invalid t)
+          ;; regexp func protected by above if condition
+          (when (not (parse-js-identifier-part-p chunk))
+            (setq invalid t)
+            (parse-js--warn start (point) "Invalid identifier character")))
+        (unless invalid
+          (push (string chunk) word)))
+       (t
+        (setq looking nil)))
       (setq start (point)))
-    ;; If unable to property parse escapes return nil
+    ;; If unable to properly parse escapes return nil,
     ;; the word is still moved over. Warning are added
     ;; and the word can not be considered a keyword.
     (unless invalid

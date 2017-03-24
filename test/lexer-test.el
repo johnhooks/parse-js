@@ -45,6 +45,12 @@
 (defun parse-js-test-lexer-err ()
   (while (not (eq parse-js-EOF (cadr (assq 'type (parse-js-get-token)))))))
 
+(defun parse-js-test-lexer-warn (start end)
+  (while (not (eq parse-js-EOF (cadr (assq 'type (parse-js-get-token))))))
+  (let ((warning (pop parse-js--warnings)))
+    (should (equal start (car warning)))
+    (should (equal end (cadr warning)))))
+
 (defun parse-js-test-lexer-ctx (depth expr-allowed)
   (let (token
         (index 0))
@@ -82,6 +88,13 @@
                     (should-error
                      (parse-js-test-lexer-err)
                      :type ,expected)))))
+
+(cl-defmacro parse-js-deftest-lexer-warning (name content &key start end bind)
+  (declare (indent defun))
+  `(ert-deftest ,(intern (format "parse-js-test-lex-warning-%s" name)) ()
+     (parse-js-test-env ,content ,bind
+                #'(lambda ()
+                    (parse-js-test-lexer-warn ,start ,end)))))
 
 ;;; Punctuation
 
@@ -292,11 +305,16 @@
 (parse-js-deftest-lexer-err unexpected-character-error
   "foo @" 'parse-js-unexpected-character-error)
 
-;; (parse-js-deftest-lexer-err identifier-invalid-escape
-;;   "foo\\x0035" 'parse-js-unexpected-character-error)
+;;; Name & Identifier Warnings
 
-;; (parse-js-deftest-lexer-err identifier-invalid-part
-;;   "foo\\u0040" 'parse-js-identifier-part-error)
+(parse-js-deftest-lexer-warning identifier-invalid-escape
+  "foo\\x0035" :start 4 :end 6)
+
+(parse-js-deftest-lexer-warning identifier-invalid-start
+  "\\u0010foo" :start 1 :end 7)
+
+(parse-js-deftest-lexer-warning identifier-invalid-part
+  "foo\\u0010" :start 4 :end 10)
 
 ;;; Numbers
 
@@ -348,13 +366,16 @@
 (parse-js-deftest-lexer float-start-with-dot
   ".65536e5" parse-js-NUM :length 8)
 
-;;; Number Errors
+;;; Number Warnings
 
-(parse-js-deftest-lexer-err float-missing-exponent
-  "6.5536e foo" 'parse-js-number-invalid-error)
+(parse-js-deftest-lexer-warning float-missing-exponent
+  "6.5536e foo" :start 1 :end 8)
 
-(parse-js-deftest-lexer-err identifier-after-number
-  "65536foo" 'parse-js-unexpected-identifier-error)
+(parse-js-deftest-lexer-warning float-missing-exponent-with-sign
+  "6.5536e- foo" :start 1 :end 9)
+
+(parse-js-deftest-lexer-warning identifier-after-number
+  "65536foo" :start 6 :end 9)
 
 ;;; Strings
 
@@ -383,17 +404,17 @@
   "\"foo \\42ar\"" parse-js-STRING :length 11
   :bind ((parse-js--strict nil)))
 
-;;; String Errors
+;;; String Warnings
 
-(parse-js-deftest-lexer-err string-missing-delimiter
-  "\"foo bar baz" 'parse-js-string-delimiter-error)
+(parse-js-deftest-lexer-warning string-missing-delimiter
+  "\"foo bar baz" :start 1 :end 13)
 
-;; (parse-js-deftest-lexer-err string-octal-in-strict
-;;   "\"foo \\42ar\"" 'parse-js-string-octal-strict-error
-;;   :bind ((parse-js--strict t)))
+(parse-js-deftest-lexer-warning string-octal-in-strict
+  "\"foo \\42ar\"" :start 6 :end 9
+  :bind ((parse-js--strict t)))
 
-;; (parse-js-deftest-lexer-err string-invalid-hex-escape
-;;   "\"foo\\x6g\"" 'parse-js-string-hex-escape-error)
+(parse-js-deftest-lexer-warning string-invalid-hex-escape
+  "\"foo \\x6g\"" :start 6 :end 9)
 
 ;;; Template Strings
 
@@ -409,14 +430,14 @@
 (parse-js-deftest-lexer template-code-point
   "`foo \\u{62}ar`" parse-js-TEMPLATE :length 12 :start 2 :depth 2)
 
-;;; Template String Errors
+;;; Template String Warnings
 
 ;; (parse-js-deftest-lexer-err template-invalid-below-ecma-6
 ;;   "`foo bar`" 'parse-js-unexpected-character-error
 ;;   :bind ((parse-js-ecma-version 5)))
 
-;; (parse-js-deftest-lexer-err template-invalid-octal
-;;   "`foo \\42ar`" 'parse-js-template-octal-error)
+(parse-js-deftest-lexer-warning template-invalid-octal
+  "`foo \\42ar`" :start 6 :end 9)
 
 ;;; Regular Expressions
 
@@ -459,10 +480,13 @@
 (parse-js-deftest-lexer regexp-with-code-point-in-class
   "/f[oO]*ba[\\u{72}R]/" parse-js-REGEXP :length 19)
 
-;;; Regular Expression Errors
+;;; Regular Expression Warnings
 
-(parse-js-deftest-lexer-err regexp-missing-delimiter
-  "/ba[rz]" 'parse-js-regexp-delimiter-error)
+(parse-js-deftest-lexer-warning regexp-missing-delimiter
+  "/ba[rz]" :start 1 :end 8)
+
+(parse-js-deftest-lexer-warning regexp-missing-delimiter-class
+  "/ba[rz/" :start 1 :end 8)
 
 ;;; Keywords
 
@@ -525,3 +549,8 @@
 
 (parse-js-deftest-lexer multi-line-on-single-line-comment
   "foo /*  bar  */\n" parse-js-COMMENT :length 11 :start 5 :depth 2)
+
+;;; Comment Errors
+
+(parse-js-deftest-lexer-err multi-line-comment-missing-delimiter
+  "/* foo \n bar" 'parse-js-multi-line-comment-delimiter-error)
