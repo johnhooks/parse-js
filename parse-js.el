@@ -376,6 +376,9 @@ Also stores a reference to the token type in `parse-js-keywords'."
 (defvar-local parse-js--string-buffer nil
   "List of chars built up while scanning various tokens.")
 
+(defvar-local parse-js--warnings '()
+  "A list to hold queued warnings.")
+
 (defun parse-js-config ()
   "Configure Parser State at beginning of buffer or optionally START-POS."
   ;; Can the parser start at a position other than the beginning of the
@@ -400,9 +403,15 @@ Also stores a reference to the token type in `parse-js-keywords'."
     (setq parse-js--in-generator nil)
     (setq parse-js--in-async nil)
     (setq parse-js--labels '())
-    (setq parse-js--string-buffer nil)))
+    (setq parse-js--string-buffer nil)
+    (setq parse-js--warnings nil)))
 
 ;;; Utility Functions
+
+(defun parse-js--warn (start end message)
+  "Queue a warning into `parse-js--warnings'."
+  (push (list start end message) parse-js--warnings)
+  nil)                                  ; Return nil
 
 (defun parse-js--unexpected (&optional pos)
   "Signal unexpected character error, optionally at POS."
@@ -730,71 +739,6 @@ Otherwise signal `parse-js-unexpected-character-error'."
   "Attempt to read a number from buffer from START to END in RADIX."
   (string-to-number (buffer-substring-no-properties start end) radix))
 
-;; NOTE: This function is used to read and parse an ocatal integer.
-;; Used in `parse-js--read-escape-char'
-(defun parse-js--read-octal (upto)
-  "Read and parse value of an octal integer from point.
-Read UPTO a specific number of characters."
-  (let ((start (point)))
-    (when (parse-js--eat (concat "[0-7]\\{" (number-to-string upto) "\\}"))
-      (parse-js--buffer-to-number start (point) 8))))
-
-(defun parse-js--read-code-point ()
-  "Read Unicode escape from buffer and return an integer."
-  (if (eq ?{ (char-after))
-      ;; Unicode Code Point Escape \u{...}
-      (progn
-        (forward-char)                  ; Move over '{'
-        (let ((code nil)
-              (start (point)))
-          (when (parse-js--eat parse-js--hexadecimal-re)
-            (setq code (parse-js--buffer-to-number start (point) 16)))
-          (cond ((not code)
-                 (parse-js--raise 'parse-js-code-point-error start (point)))
-                ((> code #x10ffff) ; Think this error should be removed
-                 (parse-js--raise 'parse-js-code-point-bound-error start (point)))
-                (t
-                 (parse-js--expect-char ?})
-                 code))))
-    ;; Unicode Escape Sequence \uXXXX
-    (let ((start (point)))
-      (or (and (parse-js--eat "[0-9A-Fa-f]\\{4\\}")
-               (parse-js--buffer-to-number start (point) 16))
-          (parse-js--raise 'parse-js-escape-sequence-error start (point))))))
-
-(defun parse-js--read-escape-char (&optional in-template)
-  "Read ECMAScript escape sequence from buffer.
-The IN-TEMPLATE option invalidates the use of octal literals in the string."
-  (forward-char)                        ; Move over '\'
-  (let ((char (char-after)))
-    (cond ((eq ?u char)
-           (forward-char)
-           (parse-js--read-code-point))
-          ((eq ?x char)
-           (forward-char)
-           (let ((start (point)))
-             (or (parse-js--eat "[0-9A-Fa-f]\\{2\\}")
-                 (parse-js--raise 'parse-js-string-hex-escape-error (- start 2) (point)))))
-          ((<= ?0 char ?7)
-           (let ((start (point))
-                 (num (parse-js--read-octal 3)))
-             (when (or (not num)
-                       (> num 255))
-               (goto-char start)
-               (setq num (parse-js--read-octal 2))
-               (when (not num) ; HACK: Find better solution than 3 attempts.
-                 (goto-char start)
-                 (setq num (parse-js--read-octal 1))))
-             (when (and (or parse-js--strict in-template)
-                        (or (< 1 (- (point) start))
-                            (not (= 0 num))))
-               ;; TODO: Only warn about illegal octals.
-               (if in-template
-                   (parse-js--raise 'parse-js-template-octal-error (1- start) (point))
-                 (parse-js--raise 'parse-js-string-octal-strict-error (1- start) (point))))))
-          (t
-           (forward-char)))))
-
 (defun parse-js--read-number (&optional starts-with-dot)
   "Read JavaScript number from the buffer.
 STARTS-WITH-DOT indicates the previous character was a period."
@@ -844,6 +788,53 @@ STARTS-WITH-DOT indicates the previous character was a period."
               (parse-js--raise 'parse-js-unexpected-identifier-error parse-js--start (point))
             (parse-js--finish-token parse-js-NUM)))
       (parse-js--read-number nil))))
+
+(defun parse-js--read-code-point ()
+  "Read Unicode escape from buffer.
+Return an integer representing the escape if valid, otherwise nil."
+  (let ((code nil)
+        (start (point)))
+    (if (eq ?{ (char-after))
+        ;; Unicode Code Point Escape \u{...}
+        (progn
+          (forward-char)                ; Move over '{'
+          (when (parse-js--eat parse-js--hexadecimal-re)
+            (setq code (parse-js--buffer-to-number (1+ start) (point) 16)))
+          (cond
+           ((not code)
+            (parse-js--warn (1- start) (point) "Invalid Unicode code point"))
+           ((> code #x10ffff)
+            (parse-js--warn (1- start) (point) "Unicode code point out of bounds"))
+           (t
+            (parse-js--expect-char ?})
+            code)))
+      ;; Unicode Escape Sequence \uXXXX
+      (if (parse-js--eat "[0-9A-Fa-f]\\{4\\}")
+          (parse-js--buffer-to-number start (point) 16)
+        (parse-js--eat "[0-9A-Fa-f]\\{1,3\\}")
+        (parse-js--warn (- start 2) (point) "Invalid Unicode escape sequence")))))
+
+(defun parse-js--read-escape-char (&optional in-template)
+  "Read ECMAScript escape sequence from buffer.
+The IN-TEMPLATE option invalidates the use of octal literals in the string."
+  (forward-char)                        ; Move over '\'
+  (let ((start (1- (point)))
+        (char (char-after)))
+    ;; If invalid escapes are found attempt to warn about them.
+    (cond ((eq ?u char)
+           (forward-char)
+           (parse-js--read-code-point))
+          ((eq ?x char)
+           (forward-char)
+           (unless (parse-js--eat "[0-9A-Fa-f]\\{2\\}")
+             (parse-js--eat parse-js--hexadecimal-re)
+             (parse-js--warn start (point) "Invalid hexadecimal escape")))
+          ((<= ?0 char ?7)
+           (parse-js--eat "[0-7]\\{1,3\\}")
+           (when in-template
+             (parse-js--warn start (point) "Octal in template string")))
+          (t                            ; Any other escape
+           (forward-char)))))
 
 (defun parse-js--read-regexp ()
   "Read regular expression.
@@ -937,42 +928,62 @@ delimiter."
          (t                             ; Hit eof.
           (parse-js--raise 'parse-js-template-delimiter-errror parse-js--start (point))))))))
 
+(defun parse-js--read-word-escape ()
+  ;; Already know there was a '\'
+  (let (code)
+    (forward-char 2)
+    (if (eq ?u (char-before))
+        (progn
+          (setq parse-js--contains-esc t)
+          ;; The function below will warn of any invalid code points.
+          (parse-js--read-code-point))
+      (parse-js--warn (- (point) 2) (point) "Invalid escape in identifier"))))
+
+;; If an escape is not an identifier part or an identifier start, warn!
 (defun parse-js--read-word-internal ()
   "Read ECMAScript Identifier."
   (setq parse-js--contains-esc nil)
-  (let (code                            ; Interpreted code point.
-        char
-        (reading t))
-    (while reading
-      (setq char (char-after))
-      (cond ((not char)               ; EOF
-             (setq reading nil))
-            ((parse-js-identifier-part-p char) ; Start tested in `parse-js-get-token'.
-             (forward-char)
-             (parse-js--add-to-string char))
-            ((eq ?\\ char)
-             (forward-char)
-             (parse-js--expect-char ?u)
-             (setq parse-js--contains-esc t)
-             (setq code (parse-js--read-code-point))
-             (when (and (null parse-js--string-buffer) ; Must be start if null.
-                        ;; Start not tested on Unicode escapes.
-                        (not (parse-js-identifier-start-p code)))
-               (parse-js--raise 'parse-js-identifier-start-error parse-js--start (point)))
-             (if (parse-js-identifier-part-p code)
-                 (parse-js--add-to-string code)
-               (parse-js--raise 'parse-js-identifier-part-error parse-js--start (point))))
-            (t
-             (setq reading nil))))
-    (parse-js--collect-string)))
+  (let (chunk
+        invalid
+        (word '())
+        (start (point)))
+    ;; `parse-js-identifier-start-p' was already varified for a regular
+    ;; character. Need to check for code point escapes.
+    (when (eq ?\\ (char-after))
+      (setq chunk (parse-js--read-word-escape))
+      (setq invalid (or invalid
+                        (not chunk)
+                        (not (parse-js-identifier-start-p chunk))))
+      (if invalid
+          (parse-js--warn start (point) "Invalid identifier start")
+        (push (string chunk) word))) ; Here chunk is a character
+    (setq start (point))
+    (while (or (< 0 (skip-syntax-forward "w_"))
+               (eq ?\\ (char-after)))
+      (if (eq ?\\ (char-after))
+          (progn
+            (setq chunk (parse-js--read-word-escape))
+            (setq invalid (or invalid   ; Once it is set stop checking.
+                              (not chunk)
+                              (not (parse-js-identifier-part-p chunk))))
+            (unless invalid
+              (push (string chunk) word)))
+        (unless invalid
+          (push (buffer-substring-no-properties start (point)) word)))
+      (setq start (point)))
+    ;; If unable to property parse escapes return nil
+    ;; the word is still moved over. Warning are added
+    ;; and the word can not be considered a keyword.
+    (unless invalid
+      (apply #'concat (nreverse word)))))
 
 (defun parse-js--read-word ()
   "Read from buffer an ECMAScript Identifier Name or Keyword."
   (let ((word (parse-js--read-word-internal))
         (type parse-js-NAME))
-    (when (and (or (>= parse-js-ecma-version 6)
-                   (not parse-js--contains-esc))
-               (not (eq parse-js-DOT parse-js--prev-type)))
+    (when (and word                     ; If word is nil just highlight it.
+               (or (>= parse-js-ecma-version 6)
+                   (not parse-js--contains-esc)))
       (setq type (or (gethash (intern word) parse-js-keywords)
                      parse-js-NAME)))
     (parse-js--finish-token type word)))
