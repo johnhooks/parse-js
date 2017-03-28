@@ -552,5 +552,5 @@
 
 ;;; Comment Errors
 
-(parse-js-deftest-lexer-err multi-line-comment-missing-delimiter
-  "/* foo \n bar" 'parse-js-multi-line-comment-delimiter-error)
+(parse-js-deftest-lexer-warning comment-missing-delimiter
+  "foo /* bar \n qux" :start 5 :end 17)

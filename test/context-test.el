@@ -45,14 +45,14 @@
   (insert "return {}")
   (goto-char 1)
   (parse-js-get-token)                        ; move over return
-  (parse-js--skip-whitespace)
+  (parse-js--skip-space)
   (should (eq nil (parse-js--brace-is-block-p parse-js-RETURN))))
 
 (parse-js-deftest brace-is-block-return-newline
   (insert "return \n {}")
   (goto-char 1)
   (parse-js-get-token)                        ; move over return
-  (parse-js--skip-whitespace)
+  (parse-js--skip-space)
   (should (eq t (parse-js--brace-is-block-p parse-js-RETURN))))
 
 (parse-js-deftest brace-is-block-else

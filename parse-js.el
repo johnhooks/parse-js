@@ -46,12 +46,6 @@
 (define-error 'parse-js-unexpected-character-error
   "Unexpected character" 'parse-js-error)
 
-(define-error 'parse-js-template-delimiter-error
-  "Missing template closing delimiter" 'parse-js-error)
-
-(define-error 'parse-js-multi-line-comment-delimiter-error
-  "Missing multi line comment closing delimiter" 'parse-js-error)
-
 ;;; Token Types
 
 ;; Quoted from acorn/src/tokentype.js
@@ -301,6 +295,9 @@ Also stores a reference to the token type in `parse-js-keywords'."
 (defvar-local parse-js--warnings '()
   "A list to hold queued warnings.")
 
+(defvar-local parse-js--comment-hook nil
+  "Hook for handling comments.")
+
 (defun parse-js-config ()
   "Configure Parser State at beginning of buffer or optionally START-POS."
   ;; Can the parser start at a position other than the beginning of the
@@ -417,16 +414,49 @@ Otherwise signal `parse-js-unexpected-character-error'."
     (signal 'parse-js-unexpected-character-error
             `((start ,(point) (end ,(1+ (point))))))))
 
-(defun parse-js--skip-whitespace ()
-  "Skip forward over whitespace and newlines."
-  ;; Return t if moved over whitespace and/or newline.
-  (let ((start (point)))
-    (while (or (< 0 (skip-syntax-forward " "))
-               (when (eq ?\C-j (char-after))
-                 (forward-char)
-                 (or parse-js--newline-before     ; Just return it if already t
-                     (setq parse-js--newline-before t)))))
-    (< start (point))))
+(defun parse-js--skip-line-comment ()
+  "Skip line comment and run comment hook."
+  ;; I think it is okay to fuck with start and end variables.
+  ;; This function should execute after parse-js--next has saved prev
+  ;; state of token and has not yet set start.
+  (setq parse-js--start (point))
+  (if (search-forward "\n" nil t)
+      (setq parse-js--newline-before t)
+    (goto-char (point-max)))
+  (setq parse-js--end (point))
+  (run-hooks 'parse-js--comment-hook))
+
+(defun parse-js--skip-block-comment ()
+  "Skip block comment and run comment hook."
+  (setq parse-js--start (point))
+  (or (and (re-search-forward "*/\\|\n" nil t)
+           (if (eq ?\C-j (char-before))
+               (progn
+                 (setq parse-js--newline-before t)
+                 (search-forward "*/" nil t))
+             t))                    ; Found '*/' without '\n'
+      (progn
+        (goto-char (point-max))
+        (parse-js--warn parse-js--start (point-max) "Missing comment closing delimiter")))
+  (setq parse-js--end (point))
+  (run-hooks 'parse-js--comment-hook))
+
+(defun parse-js--skip-space ()
+  "Skip whitespace and comments."
+  (let (first second (looking t))
+    (while (and looking (not (eobp)))
+      (skip-syntax-forward " ")
+      (setq first (char-after))
+      (cond
+       ((and (eq ?\/ first) (eq ?\/ (setq second (parse-js--peek))))
+        (parse-js--skip-line-comment))
+       ((and (eq ?\/ first) (eq ?\* second))
+        (parse-js--skip-block-comment))
+       ((eq ?\C-j first)
+        (forward-char)
+        (setq parse-js--newline-before t))
+       (t
+        (setq looking nil))))))
 
 ;;; Context Functions
 
@@ -576,11 +606,11 @@ Otherwise signal `parse-js-unexpected-character-error'."
                      (setq parse-js--newline-before t)
                      (search-forward "*/" nil t))
                  t))                    ; Found '*/' without '\n'
-          (parse-js--raise 'parse-js-multi-line-comment-delimiter-error parse-js--start (point)))
+          (progn
+            (goto-char (point-max))
+            (parse-js--warn parse-js--start (point-max) "Missing comment closing delimiter")))
       (parse-js--finish-token parse-js-COMMENT))
-     ((or parse-js--expr-allowed                ; Must be a regular expression.
-          ;;(parse-js--can-insert-semicolon-p)
-          )
+     ((or parse-js--expr-allowed)              ; Must be a regular expression.
       (parse-js--read-regexp))
      ((eq ?= next)
       (parse-js--finish-op parse-js-ASSIGN 2))
@@ -713,8 +743,10 @@ STARTS-WITH-DOT indicates the previous character was a period."
             (parse-js--eat parse-js--binary-re)))
           (when (and (char-after)           ; Protect regex search from nil.
                      (parse-js-identifier-part-p (char-after)))
-            (save-excursion
-              (let ((start (point)))
+            ;; If an identifier is found afer a number push a warning, though
+            ;; still parse it as an identifier. Maybe change in the future.
+            (let ((start (point)))
+              (save-excursion
                 (skip-syntax-forward "w_")
                 (parse-js--warn start (point) "Unexpected identifier directly after number"))))
           (parse-js--finish-token parse-js-NUM))
@@ -860,7 +892,8 @@ delimiter."
          ((eq ?\\ char)
           (parse-js--read-escape-char t))
          (t                             ; Hit eof.
-          (parse-js--raise 'parse-js-template-delimiter-errror parse-js--start (point))))))))
+          (parse-js--warn parse-js--start (point-max) "Missing template string closing delimiter")
+          (throw 'token (parse-js--finish-token parse-js-TEMPLATE))))))))
 
 (defun parse-js--read-word-escape ()
   ;; Already know there was a '\'
@@ -895,10 +928,8 @@ delimiter."
     (setq start (point))
     (while looking
       (cond
-       ((< 0 (skip-syntax-forward "w_"))
-        (unless invalid
-          (push (buffer-substring-no-properties start (point)) word)))
        ((eq ?\\ (char-after))
+        (setq parse-js--contains-esc t)
         (setq chunk (parse-js--read-word-escape))
         (if (not chunk)
             (setq invalid t)
@@ -908,10 +939,13 @@ delimiter."
             (parse-js--warn start (point) "Invalid identifier character")))
         (unless invalid
           (push (string chunk) word)))
+       ((< 0 (skip-syntax-forward "w_"))
+        (unless invalid
+          (push (buffer-substring-no-properties start (point)) word)))
        (t
         (setq looking nil)))
       (setq start (point)))
-    ;; If unable to properly parse escapes return nil,
+    ;; If unable to properly parse an escape return nil,
     ;; the word is still moved over. Warning are added
     ;; and the word can not be considered a keyword.
     (unless invalid
@@ -972,10 +1006,8 @@ delimiter."
       ;; Reset `parse-js--newline-before' unless last token was a comment.
       ;; Allows comments to set `parse-js--newline-before' in addition to
       ;; `parse-js--skip-whitespace'.
-      (unless (and parse-js--newline-before
-                   (eq parse-js-COMMENT parse-js--prev-type))
-        (setq parse-js--newline-before nil))
-      (parse-js--skip-whitespace))
+      ;; TODO: make parse-js--skip-space work!!!
+      (parse-js--skip-space))
     (setq char (char-after)
           parse-js--start (point))
     (cond
